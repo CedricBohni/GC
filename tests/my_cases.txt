@@ -1,0 +1,42 @@
+# Your own test cases. `cargo test --test my_cases` runs every line below.
+#
+# Format (whitespace separated):   bits  frac  shift  value
+#   bits  : ring width n, 1..=128 (Z_{2^n})
+#   frac  : fractional bits of the fixed-point encoding, 0..=bits
+#   shift : arithmetic right shift amount s, 0..bits
+#   value : decimal like -3.25 (encoded as round(value * 2^frac)), or raw:<int> for the
+#           signed ring integer itself
+#
+# Each line runs lt0 and ars(shift) several times with fresh garbled circuits and compares
+# against the plaintext result.
+
+# 16-bit ring, 8 fractional bits (Q7.8)
+16  8   8   -3.25
+16  8   8   3.25
+16  8   8   0
+16  8   8   -0.00390625
+16  8   4   127.99609375
+16  8   8   -128
+16  8   15  raw:-32768
+
+# 32-bit ring, 12 fractional bits
+32  12  12  -1234.5678
+32  12  12  1234.5678
+32  12  1   raw:-1
+
+# Truncation after a fixed-point multiply: (-1.5 * 2.25) has 2*frac = 16 frac bits; shift by 8
+32  16  8   -3.375
+
+# 64-bit ring, 16 fractional bits
+64  16  16  -98765.4321
+64  16  63  raw:-9223372036854775808
+
+# Odd widths
+13  5   3   -7.40625
+1   0   0   raw:-1
+2   1   1   -0.5
+
+# 128-bit ring
+128 64  64  -123456789.987654321
+128 64  127 raw:-170141183460469231731687303715884105728
+128 64  1   raw:170141183460469231731687303715884105727

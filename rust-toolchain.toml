@@ -1,0 +1,4 @@
+# swanky (fancy-garbling) is edition 2024 and pins Rust 1.98.0.
+[toolchain]
+channel = "1.98.0"
+profile = "minimal"

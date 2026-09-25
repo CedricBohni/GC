@@ -1,0 +1,27 @@
+[package]
+name = "gc-gates"
+version = "0.1.0"
+edition = "2021"
+description = "Semi-honest 2PC garbled-circuit gates (less-than-zero, arithmetic right shift) on additive shares over Z_{2^n}, n <= 128, after Hemenway, Lu, Ostrovsky and Welser 2016"
+
+[dependencies]
+# swanky (Galois), pinned. fancy-garbling gives half-gates + free-XOR garbling with a static
+# (garble now, evaluate later) API, which is what the dealer model needs.
+fancy-garbling = { git = "https://github.com/GaloisInc/swanky.git", rev = "e0f4a621ba39b3035e4400f443ad87634aaf3dce", features = ["serde"] }
+fancy-traits = { git = "https://github.com/GaloisInc/swanky.git", rev = "e0f4a621ba39b3035e4400f443ad87634aaf3dce" }
+swanky-channel = { git = "https://github.com/GaloisInc/swanky.git", rev = "e0f4a621ba39b3035e4400f443ad87634aaf3dce" }
+swanky-error = { git = "https://github.com/GaloisInc/swanky.git", rev = "e0f4a621ba39b3035e4400f443ad87634aaf3dce" }
+rand = "0.10"
+serde = { version = "1.0", features = ["derive"] }
+bincode = "1.3"
+num-bigint = "0.4"
+
+[dev-dependencies]
+fancy-plaintext = { git = "https://github.com/GaloisInc/swanky.git", rev = "e0f4a621ba39b3035e4400f443ad87634aaf3dce" }
+
+# Keep AES-based garbling fast in `cargo test` / debug builds.
+[profile.dev.package."*"]
+opt-level = 3
+
+[profile.dev]
+opt-level = 1
