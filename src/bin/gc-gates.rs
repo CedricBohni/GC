@@ -157,11 +157,14 @@ fn cmd_check(o: &Opts) -> Result<bool, Error> {
 }
 
 fn cmd_deal(o: &Opts) -> Result<bool, Error> {
-    let ring = o.ring()?;
-    let kind = GateKind::parse(o.str("gate")?, o.opt_num("shift")?)?;
-    let count = o.opt_num("count")?.unwrap_or(1) as usize;
-    let dir = PathBuf::from(o.str("out")?);
-    let (k0, k1) = deal(kind, ring, count)?;
+    let ring = o.ring()?; // ring with arithmetic mod of 2^n
+    let kind = GateKind::parse(o.str("gate")?, o.opt_num("shift")?)?; // choose gate
+    let count = o.opt_num("count")?.unwrap_or(1) as usize; // how many gates
+    let dir = PathBuf::from(o.str("out")?); 
+
+    let (k0, k1) = deal(kind, ring, count)?; // generate keys for each of the gates
+
+    // one file per party to save their pregenerated data, which is used by the party in the online phase
     std::fs::create_dir_all(&dir)?;
     for (id, keys) in [(0, &k0), (1, &k1)] {
         let path = dir.join(format!("party{id}.key"));
@@ -172,6 +175,7 @@ fn cmd_deal(o: &Opts) -> Result<bool, Error> {
 }
 
 fn cmd_share(o: &Opts) -> Result<bool, Error> {
+    // generate random shares for parties and return them in console
     let ring = o.ring()?;
     let fp = FixedPoint::new(ring, o.num("frac")?)?;
     let xs = o.values.iter().map(|v| fp.parse(v)).collect::<Result<Vec<_>, _>>()?;
@@ -183,6 +187,7 @@ fn cmd_share(o: &Opts) -> Result<bool, Error> {
 }
 
 fn cmd_party(o: &Opts) -> Result<bool, Error> {
+    // define party
     let id = o.num("id")?;
     let keys: Vec<PartyKey> = bincode::deserialize(&std::fs::read(o.str("key")?)?)?;
     let first = keys.first().ok_or_else(|| Error::new("key file holds no gate instances"))?;
@@ -190,6 +195,7 @@ fn cmd_party(o: &Opts) -> Result<bool, Error> {
         return Err(Error::new(format!("key file is for party {}, not {id}", first.party())));
     }
     let ring = first.ring();
+    // retrieve keys
     let inputs = o
         .str("input")?
         .split(',')
@@ -200,6 +206,7 @@ fn cmd_party(o: &Opts) -> Result<bool, Error> {
         return Err(Error::new(format!("key file holds {} gate instances but --input has {} shares", keys.len(), inputs.len())));
     }
 
+    // connect to channel
     let mut ch = match (id, o.opt_str("listen"), o.opt_str("connect")) {
         (0, Some(addr), None) => {
             println!("party 0: waiting for party 1 on {addr}");
@@ -211,8 +218,12 @@ fn cmd_party(o: &Opts) -> Result<bool, Error> {
         }
         _ => return Err(Error::new("party 0 needs --listen ADDR, party 1 needs --connect ADDR")),
     };
+
+    // run the evaluation
     let shares = eval_shared(&keys, &inputs, &mut ch)?;
     println!("party {id}: {} output share(s): {}", shares.len(), shares.iter().map(u128::to_string).collect::<Vec<_>>().join(","));
+    
+    // combine shares from eval and reveal output if requested
     if o.has("reveal") {
         let frac = o.opt_num("frac")?.unwrap_or(0);
         let fp = FixedPoint::new(ring, frac)?;

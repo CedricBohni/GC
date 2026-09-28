@@ -57,6 +57,7 @@ impl<F: FancyBinary> Circuit<F> for ShareConverted {
     type Input = Vec<F::Item>;
     type Output = Vec<F::Item>;
 
+    // does the computation
     fn execute(&self, f: &mut F, inputs: Vec<F::Item>, ch: &mut Channel) -> swanky_error::Result<Vec<F::Item>> {
         let n = self.bits as usize;
         assert_eq!(inputs.len(), 3 * n, "expected x0, x1 and R, {n} wires each");
