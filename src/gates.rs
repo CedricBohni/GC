@@ -110,7 +110,7 @@ pub fn gen(kind: GateKind, ring: Ring) -> Result<(GarblerKey, EvaluatorKey), Err
     /// encoder: secret input for each input hold a label for 0, global offset gives label for 1 (0 xor offset). used to build labels for inputs
     /// gc: garbled tables for evaluator
     /// outputs: mapping turning final outbut ölables back to plain bits
-    let (encoder, gc, outputs) = GarbledCircuit::garble::<WireMod2, _, _>(&circuit, rand::rng())?;
+    let (encoder, gc, outputs) = GarbledCircuit::garble::<WireMod2, _, _>(&circuit, rand::rng())?; // calls circuit.execute(&mut garbler, ..)
     let encode = |b: u16| encoder.encode_inputs(&vec![b; circuit.ninputs()]).iter().map(to_label).collect::<Vec<_>>();
     let (zeros, ones) = (encode(0), encode(1)); 
     let pair = |i: usize| [zeros[i], ones[i]]; // pair for wire i 
@@ -231,7 +231,7 @@ impl EvaluatorKey {
         // rebuilds to get circuit structure
         let circuit = ShareConverted::new(self.kind, self.ring)?;
         // evaluates it using the inputs and gains f(x_0+x_1)+R
-        let bits = self.gc.eval(&circuit, inputs, &self.outputs)?; //done by library
+        let bits = self.gc.eval(&circuit, inputs, &self.outputs)?; //calls circuit.execute(&mut evaluator, ..
         Ok(bits.iter().enumerate().fold(0, |z, (i, &b)| z | ((b as u128) << i)))
     }
 

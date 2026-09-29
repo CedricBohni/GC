@@ -57,19 +57,19 @@ impl<F: FancyBinary> Circuit<F> for ShareConverted {
     type Input = Vec<F::Item>;
     type Output = Vec<F::Item>;
 
-    // does the computation
+    // does the computation of the sgn(x) or the x >> c
     fn execute(&self, f: &mut F, inputs: Vec<F::Item>, ch: &mut Channel) -> swanky_error::Result<Vec<F::Item>> {
         let n = self.bits as usize;
         assert_eq!(inputs.len(), 3 * n, "expected x0, x1 and R, {n} wires each");
         let (x0, rest) = inputs.split_at(n);
         let (x1, r) = rest.split_at(n);
-        let x = add(f, x0, x1, ch)?;
+        let x = add(f, x0, x1, ch)?; //first line of Algorithm 2 and 3
         match self.kind {
-            GateKind::Lt0 => increment(f, r, &x[n - 1], ch),
+            GateKind::Lt0 => increment(f, r, &x[n - 1], ch), // sign(x) adding the sign bit to r
             GateKind::Ars { shift } => {
                 let s = shift as usize;
-                let y: Vec<F::Item> = (0..n).map(|i| x[(i + s).min(n - 1)].clone()).collect();
-                add(f, &y, r, ch)
+                let y: Vec<F::Item> = (0..n).map(|i| x[(i + s).min(n - 1)].clone()).collect(); // drop low shift bits
+                add(f, &y, r, ch) // add y and R
             }
         }
     }
