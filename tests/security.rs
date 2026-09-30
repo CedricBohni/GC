@@ -1,20 +1,22 @@
 //! What each party sees. These guard the protocol plumbing around the garbling library: the
 //! derandomised OT, the output mask R and Alice's view of Bob's input.
 
-use gc_gates::gates::gen;
+use gc_gates::gates::{gen, EvaluatorKey};
 use gc_gates::{GateKind, Ring};
 use std::collections::HashSet;
 
 /// Bob gets exactly one label per `x1` wire from the OT. Using the other reply for any wire
-/// gives a label the garbled circuit does not accept.
+/// gives a label the garbled circuit does not accept. Keys are single-use, so Bob's key is
+/// copied through serde to try both.
 #[test]
 fn evaluator_cannot_open_the_other_ot_label() {
     let ring = Ring::new(16).unwrap();
     for j in 0..16 {
         let (alice, bob) = gen(GateKind::Lt0, ring).unwrap();
         let (x0, x1) = ring.share(ring.from_signed(-5));
+        let copy: EvaluatorKey = bincode::deserialize(&bincode::serialize(&bob).unwrap()).unwrap();
         let (msg, _) = alice.respond(x0, bob.request(x1));
-        assert!(bob.finish(x1, &msg).is_ok());
+        assert!(copy.finish(x1, &msg).is_ok());
         let flipped = x1 ^ (1 << j);
         assert!(bob.finish(flipped, &msg).is_err(), "wire {j}: Bob decoded with the label he did not choose");
     }

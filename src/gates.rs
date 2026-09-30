@@ -17,7 +17,8 @@
 //! 3. Bob takes `q_{x1} ^ m_c`, the label of his bit, evaluates the circuit, and decodes
 //!    `z1 = f(x0 + x1) + R` ([`EvaluatorKey::finish`]).
 //!
-//! Every key is single-use: evaluating a garbled circuit twice leaks.
+//! Every key is single-use: evaluating a garbled circuit twice leaks. [`GarblerKey::respond`]
+//! and [`EvaluatorKey::finish`] consume the key so this cannot happen by accident.
 
 use crate::circuits::ShareConverted;
 use crate::ring::{bit, Ring};
@@ -73,8 +74,8 @@ fn from_label(l: Label) -> WireMod2 {
     WireMod2::from_repr(l.to_le_bytes().into(), 2)
 }
 
-/// Alice's (party 0's) material for one gate instance.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+/// Alice's (party 0's) material for one gate instance. Not `Clone`: it is single-use.
+#[derive(Debug, Serialize, Deserialize)]
 pub struct GarblerKey {
     ring: Ring,
     kind: GateKind,
@@ -107,9 +108,9 @@ pub struct EvaluatorKey {
 pub fn gen(kind: GateKind, ring: Ring) -> Result<(GarblerKey, EvaluatorKey), Error> {
     let circuit = ShareConverted::new(kind, ring)?; // create the circuit which will need 3 inputs x0, x1 and R and provides f(x_0 + x_1) * R
     let n = ring.bits() as usize;
-    /// encoder: secret input for each input hold a label for 0, global offset gives label for 1 (0 xor offset). used to build labels for inputs
-    /// gc: garbled tables for evaluator
-    /// outputs: mapping turning final outbut ölables back to plain bits
+    // encoder: secret input for each input hold a label for 0, global offset gives label for 1 (0 xor offset). used to build labels for inputs
+    // gc: garbled tables for evaluator
+    // outputs: mapping turning final output labels back to plain bits
     let (encoder, gc, outputs) = GarbledCircuit::garble::<WireMod2, _, _>(&circuit, rand::rng())?; // calls circuit.execute(&mut garbler, ..)
     let encode = |b: u16| encoder.encode_inputs(&vec![b; circuit.ninputs()]).iter().map(to_label).collect::<Vec<_>>();
     let (zeros, ones) = (encode(0), encode(1)); 
@@ -158,13 +159,14 @@ impl GarblerKey {
     /// the output share `-R`.
     /// If bit j of w is 0, the garbler sends (s0 ^ m0, s1 ^ m1).
     /// If bit j of w is 1, it swaps the pads and sends (s0 ^ m1, s1 ^ m0).
-    pub fn respond(&self, x0: u128, w: u128) -> (Vec<u128>, u128) {
+    /// Consumes the key: responding twice would give Bob two labels of an `x0` wire, and so Delta.
+    pub fn respond(self, x0: u128, w: u128) -> (Vec<u128>, u128) {
         let n = self.ring.bits();
         let mut msg = Vec::with_capacity(self.message_len());
 
-        /// picks the wire label for that bit's actual value
-        /// for each bit j self.x0_labels[j] is the pair of label for 0 and 1
-        /// indexing the pair with the bit picks the active label
+        // picks the wire label for that bit's actual value
+        // for each bit j self.x0_labels[j] is the pair of label for 0 and 1
+        // indexing the pair with the bit picks the active label
         msg.extend((0..n).map(|j| self.x0_labels[j as usize][bit(x0, j) as usize]));
         
 
@@ -196,8 +198,8 @@ impl EvaluatorKey {
     }
 
     /// Step 3. Evaluates the garbled circuit on Garbler's message and returns Evaluator's output
-    /// share `z1 = f(x0 + x1) + R`.
-    pub fn finish(&self, x1: u128, msg: &[u128]) -> Result<u128, Error> {
+    /// share `z1 = f(x0 + x1) + R`. Consumes the key, like [`GarblerKey::respond`].
+    pub fn finish(self, x1: u128, msg: &[u128]) -> Result<u128, Error> {
         // check size
         let n = self.ring.bits() as usize;
         if msg.len() != 3 * n {
@@ -207,19 +209,19 @@ impl EvaluatorKey {
         // e_b = s_b ⊕ m_{b⊕w} (ot_msgs[2j]= (e_0) and ot_msgs[2j+1] = (e_1))
         let (x0_labels, ot_msgs) = msg.split_at(n);
         // get evaluator label from OT retrieve (2j + x1_j) xor m_c removes mask of its own bit
-        /// beaver derandomization trick: pregenerated random OT becomes real OT with inputs XOR
-        /// for each j take m_c (ot_labels[j])
-        /// do ot_msgs[2*j + x] ^ m_c since
-        /// e_x ⊕ m_c = s_x ⊕ m_{x⊕w} ⊕ m_c
-        /// = s_x ⊕ m_{x⊕c⊕x} ⊕ m_c      (since w = c ⊕ x)
-        /// = s_x ⊕ m_c ⊕ m_c
-        /// = s_x
-        /// can not reveal s_{1-x} ⊕ m_{1-c} since m_{1-c} is unknown
+        // beaver derandomization trick: pregenerated random OT becomes real OT with inputs XOR
+        // for each j take m_c (ot_labels[j])
+        // do ot_msgs[2*j + x] ^ m_c since
+        // e_x ⊕ m_c = s_x ⊕ m_{x⊕w} ⊕ m_c
+        // = s_x ⊕ m_{x⊕c⊕x} ⊕ m_c      (since w = c ⊕ x)
+        // = s_x ⊕ m_c ⊕ m_c
+        // = s_x
+        // can not reveal s_{1-x} ⊕ m_{1-c} since m_{1-c} is unknown
         let x1_labels = (0..n).map(|j| ot_msgs[2 * j + bit(x1, j as u32) as usize] ^ self.ot_labels[j]);
-        /// build circuit input vector
-        /// 0..n: x0_labels (with one active label)
-        /// n..2n: x1_labels (with one active label)
-        /// 2n..3n: R
+        // build circuit input vector
+        // 0..n: x0_labels (with one active label)
+        // n..2n: x1_labels (with one active label)
+        // 2n..3n: R
         let inputs: Vec<WireMod2> = x0_labels            // n labels from the garbler's message
             .iter().copied()                             // &[u128] → u128
             .chain(x1_labels)                            // n labels just unmasked from the OT
