@@ -26,6 +26,7 @@ Distributed run in separate terminals (dealer, then party 0 = garbler, party 1 =
   gc-gates party --id 1 --key DIR/party1.key --input SHARES --connect ADDR [--reveal] [--frac F]
       Runs the online phase and prints this party's output shares. With --reveal both
       parties exchange shares and print the plaintext outputs (as fixed-point with F).
+      Keys are single-use: the key file is renamed to KEY.used before connecting.
 ";
 
 fn main() {
@@ -189,7 +190,11 @@ fn cmd_share(o: &Opts) -> Result<bool, Error> {
 fn cmd_party(o: &Opts) -> Result<bool, Error> {
     // define party
     let id = o.num("id")?;
-    let keys: Vec<PartyKey> = bincode::deserialize(&std::fs::read(o.str("key")?)?)?;
+    let key_path = o.str("key")?;
+    if !std::path::Path::new(key_path).exists() && std::path::Path::new(&format!("{key_path}.used")).exists() {
+        return Err(Error::new(format!("{key_path} was already used (keys are single-use); deal fresh keys")));
+    }
+    let keys: Vec<PartyKey> = bincode::deserialize(&std::fs::read(key_path)?)?;
     let first = keys.first().ok_or_else(|| Error::new("key file holds no gate instances"))?;
     if first.party() as u32 != id {
         return Err(Error::new(format!("key file is for party {}, not {id}", first.party())));
@@ -206,6 +211,13 @@ fn cmd_party(o: &Opts) -> Result<bool, Error> {
         return Err(Error::new(format!("key file holds {} gate instances but --input has {} shares", keys.len(), inputs.len())));
     }
 
+    // Keys are single-use: running twice on one garbled circuit would leak Delta to party 1.
+    // Mark the file as used before anything goes over the network.
+    let used = format!("{key_path}.used");
+    std::fs::rename(key_path, &used)?;
+    println!("party {id}: key file moved to {used} (keys are single-use)");
+    let kinds: Vec<GateKind> = keys.iter().map(PartyKey::kind).collect();
+
     // connect to channel
     let mut ch = match (id, o.opt_str("listen"), o.opt_str("connect")) {
         (0, Some(addr), None) => {
@@ -220,20 +232,20 @@ fn cmd_party(o: &Opts) -> Result<bool, Error> {
     };
 
     // run the evaluation
-    let shares = eval_shared(&keys, &inputs, &mut ch)?;
+    let shares = eval_shared(keys, &inputs, &mut ch)?;
     println!("party {id}: {} output share(s): {}", shares.len(), shares.iter().map(u128::to_string).collect::<Vec<_>>().join(","));
     
     // combine shares from eval and reveal output if requested
     if o.has("reveal") {
         let frac = o.opt_num("frac")?.unwrap_or(0);
         let fp = FixedPoint::new(ring, frac)?;
-        let outs = reveal(&keys, &shares, &mut ch)?;
-        for (k, y) in keys.iter().zip(outs) {
-            let shown = match k.kind() {
+        let outs = reveal(ring, &shares, &mut ch)?;
+        for (kind, y) in kinds.iter().zip(outs) {
+            let shown = match kind {
                 GateKind::Ars { .. } => format!("{} (raw {})", fp.format(y), ring.to_signed(y)),
                 _ => ring.to_signed(y).to_string(),
             };
-            println!("  {} -> {shown}", k.kind());
+            println!("  {kind} -> {shown}");
         }
     }
     Ok(true)

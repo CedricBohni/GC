@@ -57,6 +57,10 @@ $B party --id 1 --key keys/party1.key --input <shares1> --connect 127.0.0.1:7000
 Without `--reveal`, each party prints only its output shares. Use this when a later gate
 consumes the output. The parties can be started in either order.
 
+Keys are single-use. Before connecting, `party` renames its key file to `<key>.used`, so a
+second run on the same file fails instead of reusing the garbled circuit. Deal fresh keys for
+every run.
+
 ## Library use
 
 ```rust
@@ -65,13 +69,15 @@ use gc_gates::{deal, GateKind, Ring, online::eval_shared, transport::TcpChannel}
 let ring = Ring::new(64)?;
 let (keys0, keys1) = deal(GateKind::Ars { shift: 16 }, ring, 1000)?;   // dealer; keys are serde types
 // party b, holding additive shares x_b of its inputs:
-let y_b = eval_shared(&keys_b, &x_b, &mut channel)?;                  // shares of the outputs
+let y_b = eval_shared(keys_b, &x_b, &mut channel)?;                   // shares of the outputs; consumes the keys
 ```
 
 `gates::gen` returns one instance's `(GarblerKey, EvaluatorKey)`. Their three protocol steps
 (`EvaluatorKey::request`, `GarblerKey::respond`, `EvaluatorKey::finish`) are public, so you can
 use them in your own protocol. `circuits::ShareConverted` is the Boolean circuit itself. Every
-key is single-use.
+key is single-use, so `respond`, `finish` and `eval_shared` take their keys by value. A reused
+garbler key would hand Bob both labels of some `x0` wire, and their XOR is the global offset
+Delta, which lets him decode every wire.
 
 ## Protocol
 
