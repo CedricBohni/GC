@@ -1,8 +1,11 @@
 use gc_gates::online::{eval_shared, reveal};
 use gc_gates::transport::{Channel, LocalChannel, TcpChannel};
 use gc_gates::gates::gen;
-use gc_gates::{deal, simulate, GateKind, PartyKey, Ring};
+use gc_gates::{deal, simulate, GateKind, PartyKey, Ring, I256, U256};
 use std::time::Duration;
+
+mod common;
+use common::bigint_reference;
 
 fn kinds(ring: Ring) -> Vec<GateKind> {
     let mut k = vec![GateKind::Lt0];
@@ -10,9 +13,10 @@ fn kinds(ring: Ring) -> Vec<GateKind> {
     k
 }
 
-fn check(kind: GateKind, ring: Ring, x: u128) {
+fn check(kind: GateKind, ring: Ring, x: U256) {
     let got = simulate(kind, ring, x).unwrap();
-    let want = kind.reference(ring, x);
+    let want = bigint_reference(kind, ring.bits(), x);
+    assert_eq!(kind.reference(ring, x), want, "GateKind::reference disagrees with BigInt: {kind}, n={}, x={x}", ring.bits());
     assert_eq!(
         got,
         want,
@@ -30,7 +34,7 @@ fn exhaustive_small_rings() {
     for n in 1..=8 {
         let ring = Ring::new(n).unwrap();
         for kind in kinds(ring) {
-            for x in 0..=ring.mask() {
+            for x in (0..=ring.mask().as_u128()).map(U256::new) {
                 for _ in 0..3 {
                     check(kind, ring, x);
                 }
@@ -41,12 +45,13 @@ fn exhaustive_small_rings() {
 
 #[test]
 fn edge_values_wide_rings() {
-    for n in [9, 16, 31, 32, 33, 63, 64, 65, 100, 127, 128] {
+    for n in [9, 16, 31, 32, 33, 63, 64, 65, 100, 127, 128, 129, 192, 200, 255, 256] {
         let ring = Ring::new(n).unwrap();
         let (lo, hi) = ring.signed_range();
-        let edges = [lo, lo + 1, lo / 2, -2, -1, 0, 1, 2, hi / 2, hi - 1, hi];
+        let small = [-2, -1, 0, 1, 2].map(I256::new);
+        let edges = [lo, lo + 1, lo / 2, hi / 2, hi - 1, hi].into_iter().chain(small);
         let shifts = [0, 1, n / 2, n - 2, n - 1];
-        for &v in &edges {
+        for v in edges {
             let x = ring.from_signed(v);
             check(GateKind::Lt0, ring, x);
             for &shift in &shifts {
@@ -58,7 +63,7 @@ fn edge_values_wide_rings() {
 
 #[test]
 fn random_values_all_widths() {
-    for n in 1..=128 {
+    for n in 1..=256 {
         let ring = Ring::new(n).unwrap();
         for _ in 0..20 {
             let x = ring.random();
@@ -72,12 +77,12 @@ fn random_values_all_widths() {
 /// every bit of both adders, for every width.
 #[test]
 fn worst_case_carries_all_widths() {
-    for n in 1..=128 {
+    for n in 1..=256 {
         let ring = Ring::new(n).unwrap();
         let m = ring.mask();
         let (lo, hi) = ring.signed_range();
-        let xs = [lo, lo + 1, -1, 0, 1, hi].map(|v| ring.from_signed(v));
-        let x0s = [0, 1, m, m >> 1, m - (m >> 1), m ^ 1];
+        let xs = [lo, lo + 1, I256::MINUS_ONE, I256::ZERO, I256::ONE, hi].map(|v| ring.from_signed(v));
+        let x0s = [U256::ZERO, U256::ONE, m, m >> 1, m - (m >> 1), m ^ 1];
         let mut kinds = vec![GateKind::Lt0];
         kinds.extend([0, 1, n / 2, n.saturating_sub(2), n - 1].map(|shift| GateKind::Ars { shift }));
         kinds.retain(|k| !matches!(k, GateKind::Ars { shift } if *shift >= n));
@@ -88,7 +93,7 @@ fn worst_case_carries_all_widths() {
                     let (alice, bob) = gen(kind, ring).unwrap();
                     let (msg, z0) = alice.respond(x0, bob.request(x1));
                     let got = ring.add(z0, bob.finish(x1, &msg).unwrap());
-                    assert_eq!(got, kind.reference(ring, x), "{kind} n={n} x={x} x0={x0}");
+                    assert_eq!(got, bigint_reference(kind, n, x), "{kind} n={n} x={x} x0={x0}");
                 }
             }
         }
@@ -99,22 +104,24 @@ fn worst_case_carries_all_widths() {
 fn invalid_parameters_are_rejected() {
     let ring = Ring::new(16).unwrap();
     assert!(deal(GateKind::Ars { shift: 16 }, ring, 1).is_err());
+    let ring = Ring::new(256).unwrap();
+    assert!(deal(GateKind::Ars { shift: 256 }, ring, 1).is_err());
 }
 
-fn party<C: Channel>(ring: Ring, keys: Vec<PartyKey>, xs: Vec<u128>, mut ch: C) -> (Vec<u128>, Vec<u128>) {
+fn party<C: Channel>(ring: Ring, keys: Vec<PartyKey>, xs: Vec<U256>, mut ch: C) -> (Vec<U256>, Vec<U256>) {
     let shares = eval_shared(keys, &xs, &mut ch).unwrap();
     let out = reveal(ring, &shares, &mut ch).unwrap();
     (shares, out)
 }
 
-fn run_parties<C: Channel + Send + 'static>(kind: GateKind, ring: Ring, xs: &[u128], ch0: C, ch1: C) -> Vec<u128> {
+fn run_parties<C: Channel + Send + 'static>(kind: GateKind, ring: Ring, xs: &[U256], ch0: C, ch1: C) -> Vec<U256> {
     let (k0, k1) = deal(kind, ring, xs.len()).unwrap();
-    let (x0, x1): (Vec<u128>, Vec<u128>) = xs.iter().map(|&x| ring.share(x)).unzip();
+    let (x0, x1): (Vec<U256>, Vec<U256>) = xs.iter().map(|&x| ring.share(x)).unzip();
     let h1 = std::thread::spawn(move || party(ring, k1, x1, ch1));
     let (s0, out0) = party(ring, k0, x0, ch0);
     let (s1, out1) = h1.join().unwrap();
     assert_eq!(out0, out1, "both parties must reveal the same outputs");
-    let sums: Vec<u128> = s0.iter().zip(&s1).map(|(&a, &b)| ring.add(a, b)).collect();
+    let sums: Vec<U256> = s0.iter().zip(&s1).map(|(&a, &b)| ring.add(a, b)).collect();
     assert_eq!(sums, out0);
     out0
 }
@@ -130,9 +137,9 @@ fn tcp_pair() -> (TcpChannel, TcpChannel) {
 #[test]
 fn online_protocol_local_and_tcp() {
     for &use_tcp in &[false, true] {
-        for (n, shift) in [(16, 8), (64, 20), (128, 64)] {
+        for (n, shift) in [(16, 8), (64, 20), (128, 64), (129, 64), (256, 128)] {
             let ring = Ring::new(n).unwrap();
-            let xs: Vec<u128> = (0..50).map(|_| ring.random()).collect();
+            let xs: Vec<U256> = (0..50).map(|_| ring.random()).collect();
             for kind in [GateKind::Lt0, GateKind::Ars { shift }] {
                 let out = if use_tcp {
                     let (c0, c1) = tcp_pair();
@@ -141,7 +148,7 @@ fn online_protocol_local_and_tcp() {
                     let (c0, c1) = LocalChannel::pair();
                     run_parties(kind, ring, &xs, c0, c1)
                 };
-                let want: Vec<u128> = xs.iter().map(|&x| kind.reference(ring, x)).collect();
+                let want: Vec<U256> = xs.iter().map(|&x| bigint_reference(kind, n, x)).collect();
                 assert_eq!(out, want, "{kind} n={n} tcp={use_tcp}");
             }
         }
@@ -150,18 +157,20 @@ fn online_protocol_local_and_tcp() {
 
 #[test]
 fn keys_roundtrip_through_serialization() {
-    let ring = Ring::new(32).unwrap();
-    let (k0, k1) = deal(GateKind::Ars { shift: 7 }, ring, 3).unwrap();
-    let k0: Vec<PartyKey> = bincode::deserialize(&bincode::serialize(&k0).unwrap()).unwrap();
-    let k1: Vec<PartyKey> = bincode::deserialize(&bincode::serialize(&k1).unwrap()).unwrap();
-    let x = ring.from_signed(-1000);
-    for (a, b) in k0.into_iter().zip(k1) {
-        let (PartyKey::Garbler(a), PartyKey::Evaluator(b)) = (a, b) else {
-            panic!("party 0 must hold garbler keys and party 1 evaluator keys");
-        };
-        let (x0, x1) = ring.share(x);
-        let (msg, z0) = a.respond(x0, b.request(x1));
-        let y = ring.add(z0, b.finish(x1, &msg).unwrap());
-        assert_eq!(ring.to_signed(y), -1000 >> 7);
+    for (n, shift, v) in [(32, 7, -1000), (256, 200, -1000)] {
+        let ring = Ring::new(n).unwrap();
+        let (k0, k1) = deal(GateKind::Ars { shift }, ring, 3).unwrap();
+        let k0: Vec<PartyKey> = bincode::deserialize(&bincode::serialize(&k0).unwrap()).unwrap();
+        let k1: Vec<PartyKey> = bincode::deserialize(&bincode::serialize(&k1).unwrap()).unwrap();
+        let x = ring.from_signed(I256::new(v));
+        for (a, b) in k0.into_iter().zip(k1) {
+            let (PartyKey::Garbler(a), PartyKey::Evaluator(b)) = (a, b) else {
+                panic!("party 0 must hold garbler keys and party 1 evaluator keys");
+            };
+            let (x0, x1) = ring.share(x);
+            let (msg, z0) = a.respond(x0, b.request(x1));
+            let y = ring.add(z0, b.finish(x1, &msg).unwrap());
+            assert_eq!(ring.to_signed(y), I256::new(v) >> shift, "n={n}");
+        }
     }
 }

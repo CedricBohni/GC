@@ -3,7 +3,7 @@
 Two-party garbled-circuit gates on additive shares in the dealer model (1 dealer + 2 semi-honest
 parties), after Hemenway, Lu, Ostrovsky and Welser, *High-precision Secure Computation of
 Satellite Collision Probabilities* ([SCN 2016](https://eprint.iacr.org/2016/319)). Works over
-Z_{2^n} for any 1 ≤ n ≤ 128, on signed (two's complement) fixed-point values with any number of
+Z_{2^n} for any 1 ≤ n ≤ 256, on signed (two's complement) fixed-point values with any number of
 fractional bits. This is the garbled-circuit counterpart of `../FSS`: same gates, same
 command-line interface, same library shape.
 
@@ -32,6 +32,7 @@ export PATH="$(rustup run 1.98.0 rustc --print sysroot)/bin:$PATH"
 ```sh
 cargo run --release -- check --bits 16 --frac 8 -- -3.25 7.5 raw:-32768
 cargo run --release -- check --bits 128 --frac 64 --shift 64 --trials 100 -- -123456.789
+cargo run --release -- check --bits 256 --frac 128 -- -123456789012345678901234567890.0625
 ```
 
 A value is either a decimal, encoded as `round(v · 2^frac)`, or `raw:<int>`, the signed ring
@@ -44,15 +45,32 @@ To keep cases as regression tests, add lines to [tests/my_cases.txt](tests/my_ca
 
 ## Distributed run (separate terminals)
 
+In every terminal, put the pinned toolchain first (see [Toolchain](#toolchain)) and set
+`B=target/release/gc-gates`. This computes `x >> 128` on a 256-bit ring with 128 fractional
+bits, for the inputs −1234.5678 and 3.75.
+
 ```sh
-B=target/release/gc-gates
-$B deal  --gate ars --bits 32 --shift 12 --count 2 --out keys      # dealer
-$B share --bits 32 --frac 12 -- -1234.5678 3.75                    # input owner: prints both share lists
-# terminal 1 (garbler)
-$B party --id 0 --key keys/party0.key --input <shares0> --listen 127.0.0.1:7000 --reveal --frac 12
-# terminal 2 (evaluator)
-$B party --id 1 --key keys/party1.key --input <shares1> --connect 127.0.0.1:7000 --reveal --frac 12
+# terminal 1: dealer and input owner
+$B deal  --gate ars --bits 256 --shift 128 --count 2 --out keys
+$B share --bits 256 --frac 128 --out shares -- -1234.5678 3.75
+# terminal 2: party 0 (garbler)
+$B party --id 0 --key keys/party0.key --input-file shares/party0.shares --listen 127.0.0.1:7000 --reveal --frac 0
+# terminal 3: party 1 (evaluator)
+$B party --id 1 --key keys/party1.key --input-file shares/party1.shares --connect 127.0.0.1:7000 --reveal --frac 0
 ```
+
+Both parties print `-1235` and `3`, the inputs rounded down.
+
+- `deal` writes `keys/party0.key` and `keys/party1.key`, and `share --out` writes
+  `shares/party0.shares` and `shares/party1.shares`. All four are secrets, readable only by you
+  (mode 0600), and `keys/` and `shares/` are in `.gitignore`. `--count` must equal the number of
+  values shared.
+- A shares file names its ring width and party, so passing the wrong one to `party` stops with
+  an error before the key is used.
+- Without `--out`, `share` prints the two lists instead; pass a list with `--input <list>` in
+  place of `--input-file`.
+- `--frac` on `party` only affects printing: set it to the input's fractional bits minus the
+  shift (here 128 − 128 = 0).
 
 Without `--reveal`, each party prints only its output shares. Use this when a later gate
 consumes the output. The parties can be started in either order.
@@ -94,7 +112,7 @@ Algorithm 2 (< 0)                         Algorithm 3 (>> c)
 
 The sign test and the shift are wiring only. Each addition is a ripple-carry adder with one AND
 per bit and no carry out of the top bit. `lt0`'s second addition adds a single bit, so it is a
-half-adder chain. Both gates cost 2(n−1) ANDs: 254 at n = 128.
+half-adder chain. Both gates cost 2(n−1) ANDs: 254 at n = 128, 510 at n = 256.
 
 The key material follows the paper's dealer-assisted variant (§5): the dealer garbles the
 circuit and sends the garbled circuit to Bob and the input wire labels to Alice. It also
@@ -123,6 +141,19 @@ pregenerates one random OT per bit of Bob's share (§4.1.1): Alice gets `(m0, m1
 | party 0 key | 4.4 KB (`lt0`), 8.8 KB (`ars`) | 12.3 KB |
 | party 1 key | same as party 0 | 21.5 KB (garbled circuit: 764 blocks of 16 B) |
 | online traffic | 16 B each way, then local DCF evaluation | 16 B Bob → Alice, 6 KB Alice → Bob |
+
+At n = 256 the GC keys are 24.7 KB (party 0) and 43.0 KB (party 1, 1532 blocks), and the
+online traffic is 32 B Bob → Alice and 12 KB Alice → Bob. Key and message sizes grow linearly
+in n.
+
+### Rings wider than 128 bits
+
+Ring elements are 256-bit integers (`U256`/`I256` from the
+[`ethnum`](https://crates.io/crates/ethnum) crate), as in the FSS project. The circuit is
+generic in n, and wire labels stay 128 bits for every width, since they set the security level,
+not the ring. On the channel a ring element (Bob's OT correction `w`, a revealed share) is one
+128-bit word for n ≤ 128 and two above, so rings up to 128 bits send exactly what they did
+before. In key files, `R` and the OT choice bits are stored without leading zero bytes.
 
 ## Design notes
 
@@ -157,11 +188,14 @@ Costs of this choice: swanky is not on crates.io (it is a git dependency, record
 
 `cargo test` covers:
 - the circuits in plaintext: every `(x0, x1, R)` for n = 1..5 and every shift, plus random values
-  for every n up to 128 (`tests/circuits.rs`),
+  for every n up to 256 (`tests/circuits.rs`),
 - the garbled circuit size: 2 ciphertexts per AND and 2(n−1) ANDs,
 - the full gates, as in the FSS project: exhaustive for n = 1..8 (every input and every shift,
-  with fresh garblings), edge values and random values for every n up to 128,
-- the online protocol over in-process channels and TCP,
+  with fresh garblings), edge values and random values for every n up to 256, and share splits
+  that push a carry through every bit of both adders for every n up to 256. Expected values come
+  from BigInt arithmetic (`tests/common/mod.rs`, shared with the FSS project) that shares no code
+  with the library,
+- the online protocol over in-process channels and TCP, up to n = 256,
 - key serialization,
 - the security properties of each party's view (`tests/security.rs`): Bob cannot use the OT label
   he did not choose, Bob's output is masked by `R`, and Alice's view of the OT is uniform,

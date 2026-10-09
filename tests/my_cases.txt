@@ -1,7 +1,7 @@
 # Your own test cases. `cargo test --test my_cases` runs every line below.
 #
 # Format (whitespace separated):   bits  frac  shift  value
-#   bits  : ring width n, 1..=128 (Z_{2^n})
+#   bits  : ring width n, 1..=256 (Z_{2^n})
 #   frac  : fractional bits of the fixed-point encoding, 0..=bits
 #   shift : arithmetic right shift amount s, 0..bits
 #   value : decimal like -3.25 (encoded as round(value * 2^frac)), or raw:<int> for the
@@ -40,3 +40,10 @@
 128 64  64  -123456789.987654321
 128 64  127 raw:-170141183460469231731687303715884105728
 128 64  1   raw:170141183460469231731687303715884105727
+
+# Wider than 128 bits (two 128-bit words per ring element)
+129 64  64  -123456789.987654321
+144 53  53  -1234.5678
+256 128 128 -123456789012345678901234567890.0625
+256 128 255 raw:-57896044618658097711785492504343953926634992332820282019728792003956564819968
+256 128 1   raw:57896044618658097711785492504343953926634992332820282019728792003956564819967

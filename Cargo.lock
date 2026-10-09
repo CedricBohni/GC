@@ -148,6 +148,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "252afb9ae5eaa683babdc6a068b3f5726eb19e05070c731f9b2a23a7c3e8ed34"
 
 [[package]]
+name = "ethnum"
+version = "1.5.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "40404c3f5f511ec4da6fe866ddf6a717c309fdbb69fbbad7b0f3edab8f2e835f"
+dependencies = [
+ "serde",
+]
+
+[[package]]
 name = "fancy-circuits"
 version = "0.6.0"
 source = "git+https://github.com/GaloisInc/swanky.git?rev=e0f4a621ba39b3035e4400f443ad87634aaf3dce#e0f4a621ba39b3035e4400f443ad87634aaf3dce"
@@ -214,6 +223,7 @@ name = "gc-gates"
 version = "0.1.0"
 dependencies = [
  "bincode",
+ "ethnum",
  "fancy-garbling",
  "fancy-plaintext",
  "fancy-traits",

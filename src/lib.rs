@@ -2,7 +2,7 @@
 //! 2 semi-honest parties), following Hemenway, Lu, Ostrovsky, Welser: "High-precision Secure
 //! Computation of Satellite Collision Probabilities", SCN 2016.
 //!
-//! Gates, over Z_{2^n} for any 1 <= n <= 128 on signed (two's complement) values:
+//! Gates, over Z_{2^n} for any 1 <= n <= 256 on signed (two's complement) values:
 //! - `lt0`: `1{x < 0}`, share-converted Less-Than-Zero (Algorithm 2),
 //! - `ars`: arithmetic right shift by a public `s`, share-converted shift-right-by-constant
 //!   (Algorithm 3).
@@ -22,7 +22,7 @@ pub mod transport;
 
 pub use fixed::FixedPoint;
 pub use gates::{deal, GateKind, PartyKey};
-pub use ring::Ring;
+pub use ring::{Ring, I256, U256};
 
 #[derive(Debug)]
 pub struct Error(String);
@@ -61,7 +61,7 @@ impl From<swanky_error::Error> for Error {
 
 /// Run one gate on the ring element `x` with fresh keys: the dealer deals, `x` is split into
 /// random additive shares, both parties run the online phase, and the output is reconstructed.
-pub fn simulate(kind: GateKind, ring: Ring, x: u128) -> Result<u128, Error> {
+pub fn simulate(kind: GateKind, ring: Ring, x: U256) -> Result<U256, Error> {
     let (alice, bob) = gates::gen(kind, ring)?;
     let (x0, x1) = ring.share(x);
     let w = bob.request(x1);

@@ -21,7 +21,7 @@
 //! and [`EvaluatorKey::finish`] consume the key so this cannot happen by accident.
 
 use crate::circuits::ShareConverted;
-use crate::ring::{bit, Ring};
+use crate::ring::{bit, Ring, U256};
 use crate::Error;
 use fancy_garbling::classic::{GarbledCircuit, OutputMapping};
 use fancy_garbling::{WireLabel, WireMod2};
@@ -46,9 +46,9 @@ impl GateKind {
     }
 
     /// Plaintext reference: what the gate computes on the ring element `x`.
-    pub fn reference(&self, ring: Ring, x: u128) -> u128 {
+    pub fn reference(&self, ring: Ring, x: U256) -> U256 {
         match self {
-            GateKind::Lt0 => ring.msb(x) as u128,
+            GateKind::Lt0 => U256::from(ring.msb(x)),
             GateKind::Ars { shift } => ring.from_signed(ring.to_signed(x) >> shift),
         }
     }
@@ -63,7 +63,7 @@ impl std::fmt::Display for GateKind {
     }
 }
 
-/// A wire label as the 128-bit value that travels over the channel.
+/// A wire label as the 128-bit value that travels over the channel (for every ring width).
 type Label = u128;
 
 fn to_label(w: &WireMod2) -> Label {
@@ -86,7 +86,8 @@ pub struct GarblerKey {
     /// Random OT sender strings `(m0, m1)`, one pair per `x1` wire.
     ot: Vec<[Label; 2]>,
     /// `-R`.
-    z_share: u128,
+    #[serde(with = "ethnum::serde::compressed_bytes::le")]
+    z_share: U256,
 }
 
 /// Bob's (party 1's) material for one gate instance.
@@ -99,7 +100,8 @@ pub struct EvaluatorKey {
     /// Active labels of the `R` wires.
     r_labels: Vec<Label>,
     /// Random OT choice bits `c`, bit j for `x1` wire j.
-    ot_choice: u128,
+    #[serde(with = "ethnum::serde::compressed_bytes::le")]
+    ot_choice: U256,
     /// `m_c` for each `x1` wire.
     ot_labels: Vec<Label>,
 }
@@ -160,7 +162,7 @@ impl GarblerKey {
     /// If bit j of w is 0, the garbler sends (s0 ^ m0, s1 ^ m1).
     /// If bit j of w is 1, it swaps the pads and sends (s0 ^ m1, s1 ^ m0).
     /// Consumes the key: responding twice would give Bob two labels of an `x0` wire, and so Delta.
-    pub fn respond(self, x0: u128, w: u128) -> (Vec<u128>, u128) {
+    pub fn respond(self, x0: U256, w: U256) -> (Vec<u128>, U256) {
         let n = self.ring.bits();
         let mut msg = Vec::with_capacity(self.message_len());
 
@@ -193,13 +195,13 @@ impl EvaluatorKey {
     }
 
     /// Step 1. Evaluator's OT correction `w = c XOR x1`, all n bits in one ring element.
-    pub fn request(&self, x1: u128) -> u128 {
+    pub fn request(&self, x1: U256) -> U256 {
         self.ring.reduce(self.ot_choice ^ x1)
     }
 
     /// Step 3. Evaluates the garbled circuit on Garbler's message and returns Evaluator's output
     /// share `z1 = f(x0 + x1) + R`. Consumes the key, like [`GarblerKey::respond`].
-    pub fn finish(self, x1: u128, msg: &[u128]) -> Result<u128, Error> {
+    pub fn finish(self, x1: U256, msg: &[u128]) -> Result<U256, Error> {
         // check size
         let n = self.ring.bits() as usize;
         if msg.len() != 3 * n {
@@ -234,7 +236,7 @@ impl EvaluatorKey {
         let circuit = ShareConverted::new(self.kind, self.ring)?;
         // evaluates it using the inputs and gains f(x_0+x_1)+R
         let bits = self.gc.eval(&circuit, inputs, &self.outputs)?; //calls circuit.execute(&mut evaluator, ..
-        Ok(bits.iter().enumerate().fold(0, |z, (i, &b)| z | ((b as u128) << i)))
+        Ok(bits.iter().enumerate().fold(U256::ZERO, |z, (i, &b)| z | (U256::from(b) << i as u32)))
     }
 
     /// Size of the garbled circuit in 16-byte blocks.
