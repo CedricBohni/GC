@@ -5,11 +5,11 @@ use fancy_plaintext::{Dummy, DummyVal};
 use gc_gates::circuits::ShareConverted;
 use gc_gates::gates::gen;
 use gc_gates::ring::bit;
-use gc_gates::{GateKind, Ring, U256};
+use gc_gates::{GateRings, GateKind, Ring, U256};
 
 /// z1 = f(x0 + x1) + R, straight from the circuit.
 fn run(kind: GateKind, ring: Ring, x0: U256, x1: U256, r: U256) -> U256 {
-    let circuit = ShareConverted::new(kind, ring).unwrap();
+    let circuit = ShareConverted::new(kind, GateRings::uniform(ring)).unwrap();
     let n = ring.bits();
     let wires = [x0, x1, r]
         .iter()
@@ -21,7 +21,7 @@ fn run(kind: GateKind, ring: Ring, x0: U256, x1: U256, r: U256) -> U256 {
 }
 
 fn check(kind: GateKind, ring: Ring, x0: U256, x1: U256, r: U256) {
-    let want = ring.add(kind.reference(ring, ring.add(x0, x1)), r);
+    let want = ring.add(kind.reference(GateRings::uniform(ring), ring.add(x0, x1)), r);
     assert_eq!(run(kind, ring, x0, x1, r), want, "{kind} n={} x0={x0} x1={x1} R={r}", ring.bits());
 }
 
@@ -62,9 +62,9 @@ fn garbled_size_matches_and_count() {
     for n in [1, 2, 3, 16, 64, 127, 128, 129, 255, 256] {
         let ring = Ring::new(n).unwrap();
         for kind in [GateKind::Lt0, GateKind::Ars { shift: n / 2 }] {
-            let circuit = ShareConverted::new(kind, ring).unwrap();
+            let circuit = ShareConverted::new(kind, GateRings::uniform(ring)).unwrap();
             assert_eq!(circuit.and_count(), 2 * (n as usize - 1));
-            let (_, bob) = gen(kind, ring).unwrap();
+            let (_, bob) = gen(kind, GateRings::uniform(ring)).unwrap();
             assert_eq!(bob.garbled_blocks(), 2 * circuit.and_count() + 2 * n as usize, "{kind} n={n}");
         }
     }

@@ -3,7 +3,8 @@
 use gc_gates::online::{eval_shared, reveal};
 use gc_gates::transport::TcpChannel;
 use gc_gates::circuits::ShareConverted;
-use gc_gates::{deal, simulate, Error, FixedPoint, GateKind, PartyKey, Ring, U256};
+use gc_gates::fixed::format_scaled;
+use gc_gates::{deal, simulate, Error, FixedPoint, GateKind, GateRings, PartyKey, Ring, U256};
 use std::collections::HashMap;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -11,19 +12,21 @@ use std::time::Duration;
 
 const USAGE: &str = "\
 gc-gates: 2PC garbled-circuit gates (less-than-zero, arithmetic right shift) on
-additive shares over Z_{2^n}
+additive shares: operand in Z_{2^N}, output shares in Z_{2^M}
+
+--bits N is the operand (input) width. --out-bits M is the output width and defaults to N.
 
 Check gates on your own numbers (local simulation, fresh keys every trial):
-  gc-gates check --bits N --frac F [--shift S] [--trials T] VALUE...
+  gc-gates check --bits N [--out-bits M] --frac F [--shift S] [--trials T] VALUE...
       VALUE is a decimal (e.g. -3.25, encoded as round(v * 2^F)) or raw:<signed int>.
       --shift defaults to F. --trials defaults to 20.
 
 Distributed run in separate terminals (dealer, then party 0 = garbler, party 1 = evaluator):
-  gc-gates deal  --gate lt0|ars --bits N [--shift S] [--count K] --out DIR
+  gc-gates deal  --gate lt0|ars --bits N [--out-bits M] [--shift S] [--count K] --out DIR
       Writes DIR/party0.key and DIR/party1.key (K gate instances each, default 1),
       readable only by the current user.
   gc-gates share --bits N --frac F [--out DIR] VALUE...
-      Input owner: split values into additive shares, one comma list per party.
+      Input owner: split values into additive shares in Z_{2^N}, one comma list per party.
       With --out, writes them to DIR/party0.shares and DIR/party1.shares instead of printing.
   gc-gates party --id 0 --key DIR/party0.key (--input SHARES | --input-file FILE) --listen ADDR [--reveal] [--frac F]
   gc-gates party --id 1 --key DIR/party1.key (--input SHARES | --input-file FILE) --connect ADDR [--reveal] [--frac F]
@@ -105,8 +108,19 @@ impl Opts {
         self.flags.contains_key(name)
     }
 
+    /// The operand ring, `--bits`.
     fn ring(&self) -> Result<Ring, Error> {
         Ring::new(self.num("bits")?)
+    }
+
+    /// `--bits` for the operand, `--out-bits` (default `--bits`) for the output.
+    fn rings(&self) -> Result<GateRings, Error> {
+        let input = self.ring()?;
+        let output = match self.opt_num("out-bits")? {
+            Some(bits) => Ring::new(bits)?,
+            None => input,
+        };
+        Ok(GateRings { input, output })
     }
 }
 
@@ -114,8 +128,17 @@ fn parse_u32(name: &str, v: &str) -> Result<u32, Error> {
     v.parse().map_err(|_| Error::new(format!("--{name}: `{v}` is not a non-negative integer")))
 }
 
+/// A gate output in `ring`, for printing: `lt0` as 0/1, `ars` as fixed point with `frac`.
+fn show_output(kind: GateKind, ring: Ring, frac: u32, y: U256) -> String {
+    match kind {
+        GateKind::Ars { .. } => format!("{} (raw {})", format_scaled(ring.to_signed(y), frac), ring.to_signed(y)),
+        GateKind::Lt0 => y.to_string(),
+    }
+}
+
 fn cmd_check(o: &Opts) -> Result<bool, Error> {
-    let ring = o.ring()?;
+    let rings = o.rings()?;
+    let ring = rings.input;
     let fp = FixedPoint::new(ring, o.num("frac")?)?;
     let shift = o.opt_num("shift")?.unwrap_or(fp.frac());
     let trials = o.opt_num("trials")?.unwrap_or(20);
@@ -125,28 +148,30 @@ fn cmd_check(o: &Opts) -> Result<bool, Error> {
     let xs = o.values.iter().map(|v| fp.parse(v)).collect::<Result<Vec<_>, _>>()?;
     let kinds = [GateKind::Lt0, GateKind::Ars { shift }];
     // Validate the shift before printing anything.
-    ShareConverted::new(kinds[1], ring)?;
+    ShareConverted::new(kinds[1], rings)?;
 
-    println!("ring Z_2^{}, {} fractional bits, shift {shift}, {trials} trials per gate\n", ring.bits(), fp.frac());
+    println!(
+        "Z_2^{} -> Z_2^{}, {} fractional bits, shift {shift}, {trials} trials per gate\n",
+        ring.bits(),
+        rings.output.bits(),
+        fp.frac()
+    );
     let mut all_ok = true;
     for (value, &x) in o.values.iter().zip(&xs) {
         println!("x = {value}  ->  encoded {} (raw {})", fp.format(x), ring.to_signed(x));
         for kind in kinds {
-            let want = kind.reference(ring, x);
+            let want = kind.reference(rings, x);
             let mut failed = 0;
             let mut last = want;
             for _ in 0..trials {
-                let got = simulate(kind, ring, x)?;
+                let got = simulate(kind, rings, x)?;
                 if got != want {
                     failed += 1;
                     last = got;
                 }
             }
             all_ok &= failed == 0;
-            let show = |y: U256| match kind {
-                GateKind::Ars { .. } => format!("{} (raw {})", fp.format(y), ring.to_signed(y)),
-                _ => ring.to_signed(y).to_string(),
-            };
+            let show = |y: U256| show_output(kind, rings.output, fp.frac(), y);
             let status = if failed == 0 {
                 "PASS".to_string()
             } else {
@@ -161,19 +186,25 @@ fn cmd_check(o: &Opts) -> Result<bool, Error> {
 }
 
 fn cmd_deal(o: &Opts) -> Result<bool, Error> {
-    let ring = o.ring()?; // ring with arithmetic mod of 2^n
+    let rings = o.rings()?; // operand ring Z_2^w and output ring Z_2^r
     let kind = GateKind::parse(o.str("gate")?, o.opt_num("shift")?)?; // choose gate
     let count = o.opt_num("count")?.unwrap_or(1) as usize; // how many gates
     let dir = PathBuf::from(o.str("out")?); 
 
-    let (k0, k1) = deal(kind, ring, count)?; // generate keys for each of the gates
+    let (k0, k1) = deal(kind, rings, count)?; // generate keys for each of the gates
 
     // one file per party to save their pregenerated data, which is used by the party in the online phase
     std::fs::create_dir_all(&dir)?;
     for (id, keys) in [(0, &k0), (1, &k1)] {
         let path = dir.join(format!("party{id}.key"));
         write_private(&path, &bincode::serialize(keys)?)?;
-        println!("wrote {} ({count} x {kind} on Z_2^{}, {} bytes)", path.display(), ring.bits(), std::fs::metadata(&path)?.len());
+        println!(
+            "wrote {} ({count} x {kind}, Z_2^{} -> Z_2^{}, {} bytes)",
+            path.display(),
+            rings.input.bits(),
+            rings.output.bits(),
+            std::fs::metadata(&path)?.len()
+        );
     }
     Ok(true)
 }
@@ -217,7 +248,12 @@ fn cmd_party(o: &Opts) -> Result<bool, Error> {
     if first.party() as u32 != id {
         return Err(Error::new(format!("key file is for party {}, not {id}", first.party())));
     }
-    let ring = first.ring();
+    // input shares are in the operand ring, outputs in the output ring
+    let ring = first.input_ring();
+    let out_ring = first.output_ring();
+    if o.has("reveal") && keys.iter().any(|k| k.output_ring() != out_ring) {
+        return Err(Error::new("the key file mixes output rings; --reveal needs one"));
+    }
     // input shares, from the command line or a file written by `share --out`
     let input = match (o.opt_str("input"), o.opt_str("input-file")) {
         (Some(list), None) => list.to_string(),
@@ -264,14 +300,9 @@ fn cmd_party(o: &Opts) -> Result<bool, Error> {
     // combine shares from eval and reveal output if requested
     if o.has("reveal") {
         let frac = o.opt_num("frac")?.unwrap_or(0);
-        let fp = FixedPoint::new(ring, frac)?;
-        let outs = reveal(ring, &shares, &mut ch)?;
+        let outs = reveal(out_ring, &shares, &mut ch)?;
         for (kind, y) in kinds.iter().zip(outs) {
-            let shown = match kind {
-                GateKind::Ars { .. } => format!("{} (raw {})", fp.format(y), ring.to_signed(y)),
-                _ => ring.to_signed(y).to_string(),
-            };
-            println!("  {kind} -> {shown}");
+            println!("  {kind} -> {}", show_output(*kind, out_ring, frac, y));
         }
     }
     Ok(true)

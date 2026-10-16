@@ -155,6 +155,17 @@ not the ring. On the channel a ring element (Bob's OT correction `w`, a revealed
 128-bit word for n ≤ 128 and two above, so rings up to 128 bits send exactly what they did
 before. In key files, `R` and the OT choice bits are stored without leading zero bytes.
 
+### Different operand and output widths
+
+A gate can read its operand in Z_{2^w} and output shares in Z_{2^r}, with `w` and `r`
+independent (`GateRings { input, output }` in the library, `--bits w --out-bits r` on the
+command line; `--out-bits` defaults to `--bits`). The operand is reduced to `w` bits, and the
+gate outputs shares of `1{x < 0}` or `floor(x / 2^s) mod 2^r`, with `s < w`. The first adder
+runs over `w` bits and the second over `r`, so a gate costs `(w−1) + (r−1)` ANDs. The OTs and
+Alice's message (3w labels) follow `w`, and `R` and both output shares follow `r`. A wider
+output can't be produced locally from shares mod 2^w, so it has to come out of the circuit.
+For `w = r = n` the gate is the single-ring one above, with the same circuit and sizes.
+
 ## Design notes
 
 **Library: [swanky](https://github.com/GaloisInc/swanky)'s `fancy-garbling`** (Galois, MIT),

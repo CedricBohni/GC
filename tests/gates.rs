@@ -1,7 +1,7 @@
 use gc_gates::online::{eval_shared, reveal};
 use gc_gates::transport::{Channel, LocalChannel, TcpChannel};
 use gc_gates::gates::gen;
-use gc_gates::{deal, simulate, GateKind, PartyKey, Ring, I256, U256};
+use gc_gates::{GateRings, deal, simulate, GateKind, PartyKey, Ring, I256, U256};
 use std::time::Duration;
 
 mod common;
@@ -14,9 +14,9 @@ fn kinds(ring: Ring) -> Vec<GateKind> {
 }
 
 fn check(kind: GateKind, ring: Ring, x: U256) {
-    let got = simulate(kind, ring, x).unwrap();
+    let got = simulate(kind, GateRings::uniform(ring), x).unwrap();
     let want = bigint_reference(kind, ring.bits(), x);
-    assert_eq!(kind.reference(ring, x), want, "GateKind::reference disagrees with BigInt: {kind}, n={}, x={x}", ring.bits());
+    assert_eq!(kind.reference(GateRings::uniform(ring), x), want, "GateKind::reference disagrees with BigInt: {kind}, n={}, x={x}", ring.bits());
     assert_eq!(
         got,
         want,
@@ -90,7 +90,7 @@ fn worst_case_carries_all_widths() {
             for x in xs {
                 for x0 in x0s.map(|v| ring.reduce(v)) {
                     let x1 = ring.sub(x, x0);
-                    let (alice, bob) = gen(kind, ring).unwrap();
+                    let (alice, bob) = gen(kind, GateRings::uniform(ring)).unwrap();
                     let (msg, z0) = alice.respond(x0, bob.request(x1));
                     let got = ring.add(z0, bob.finish(x1, &msg).unwrap());
                     assert_eq!(got, bigint_reference(kind, n, x), "{kind} n={n} x={x} x0={x0}");
@@ -103,9 +103,9 @@ fn worst_case_carries_all_widths() {
 #[test]
 fn invalid_parameters_are_rejected() {
     let ring = Ring::new(16).unwrap();
-    assert!(deal(GateKind::Ars { shift: 16 }, ring, 1).is_err());
+    assert!(deal(GateKind::Ars { shift: 16 }, GateRings::uniform(ring), 1).is_err());
     let ring = Ring::new(256).unwrap();
-    assert!(deal(GateKind::Ars { shift: 256 }, ring, 1).is_err());
+    assert!(deal(GateKind::Ars { shift: 256 }, GateRings::uniform(ring), 1).is_err());
 }
 
 fn party<C: Channel>(ring: Ring, keys: Vec<PartyKey>, xs: Vec<U256>, mut ch: C) -> (Vec<U256>, Vec<U256>) {
@@ -115,7 +115,7 @@ fn party<C: Channel>(ring: Ring, keys: Vec<PartyKey>, xs: Vec<U256>, mut ch: C) 
 }
 
 fn run_parties<C: Channel + Send + 'static>(kind: GateKind, ring: Ring, xs: &[U256], ch0: C, ch1: C) -> Vec<U256> {
-    let (k0, k1) = deal(kind, ring, xs.len()).unwrap();
+    let (k0, k1) = deal(kind, GateRings::uniform(ring), xs.len()).unwrap();
     let (x0, x1): (Vec<U256>, Vec<U256>) = xs.iter().map(|&x| ring.share(x)).unzip();
     let h1 = std::thread::spawn(move || party(ring, k1, x1, ch1));
     let (s0, out0) = party(ring, k0, x0, ch0);
@@ -159,7 +159,7 @@ fn online_protocol_local_and_tcp() {
 fn keys_roundtrip_through_serialization() {
     for (n, shift, v) in [(32, 7, -1000), (256, 200, -1000)] {
         let ring = Ring::new(n).unwrap();
-        let (k0, k1) = deal(GateKind::Ars { shift }, ring, 3).unwrap();
+        let (k0, k1) = deal(GateKind::Ars { shift }, GateRings::uniform(ring), 3).unwrap();
         let k0: Vec<PartyKey> = bincode::deserialize(&bincode::serialize(&k0).unwrap()).unwrap();
         let k1: Vec<PartyKey> = bincode::deserialize(&bincode::serialize(&k1).unwrap()).unwrap();
         let x = ring.from_signed(I256::new(v));

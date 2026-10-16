@@ -2,7 +2,7 @@
 //! derandomised OT, the output mask R and Alice's view of Bob's input.
 
 use gc_gates::gates::{gen, EvaluatorKey};
-use gc_gates::{GateKind, Ring, I256, U256};
+use gc_gates::{GateRings, GateKind, Ring, I256, U256};
 use std::collections::HashSet;
 
 /// Bob gets exactly one label per `x1` wire from the OT. Using the other reply for any wire
@@ -11,7 +11,7 @@ use std::collections::HashSet;
 #[test]
 fn evaluator_cannot_open_the_other_ot_label() {
     for (ring, j) in [16, 200].into_iter().flat_map(|n| (0..n).map(move |j| (Ring::new(n).unwrap(), j))) {
-        let (alice, bob) = gen(GateKind::Lt0, ring).unwrap();
+        let (alice, bob) = gen(GateKind::Lt0, GateRings::uniform(ring)).unwrap();
         let (x0, x1) = ring.share(ring.from_signed(I256::new(-5)));
         let copy: EvaluatorKey = bincode::deserialize(&bincode::serialize(&bob).unwrap()).unwrap();
         let (msg, _) = alice.respond(x0, bob.request(x1));
@@ -31,11 +31,11 @@ fn evaluator_output_is_masked() {
         for kind in [GateKind::Lt0, GateKind::Ars { shift: 12 }] {
             let mut seen = HashSet::new();
             for _ in 0..200 {
-                let (alice, bob) = gen(kind, ring).unwrap();
+                let (alice, bob) = gen(kind, GateRings::uniform(ring)).unwrap();
                 let (x0, x1) = ring.share(x);
                 let (msg, z0) = alice.respond(x0, bob.request(x1));
                 let z1 = bob.finish(x1, &msg).unwrap();
-                assert_eq!(ring.add(z0, z1), kind.reference(ring, x));
+                assert_eq!(ring.add(z0, z1), kind.reference(GateRings::uniform(ring), x));
                 seen.insert(z1);
             }
             assert_eq!(seen.len(), 200, "{kind}: Bob's output share repeats across fresh keys");
@@ -52,7 +52,7 @@ fn garbler_view_of_ot_is_uniform() {
         let mut ones = [0u32; 256];
         let trials = 400;
         for _ in 0..trials {
-            let (_, bob) = gen(GateKind::Lt0, ring).unwrap();
+            let (_, bob) = gen(GateKind::Lt0, GateRings::uniform(ring)).unwrap();
             let w = bob.request(x1);
             for (j, c) in ones.iter_mut().enumerate() {
                 *c += ((w >> j as u32) & 1).as_u32();

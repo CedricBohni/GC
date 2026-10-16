@@ -17,6 +17,9 @@
 //! 3. Bob takes `q_{x1} ^ m_c`, the label of his bit, evaluates the circuit, and decodes
 //!    `z1 = f(x0 + x1) + R` ([`EvaluatorKey::finish`]).
 //!
+//! Each gate has an operand ring Z_{2^w} (the input shares, the OTs and the `x0`/`x1` wires)
+//! and an output ring Z_{2^r} (the mask `R` and both output shares), given as [`GateRings`].
+//!
 //! Every key is single-use: evaluating a garbled circuit twice leaks. [`GarblerKey::respond`]
 //! and [`EvaluatorKey::finish`] consume the key so this cannot happen by accident.
 
@@ -45,12 +48,28 @@ impl GateKind {
         }
     }
 
-    /// Plaintext reference: what the gate computes on the ring element `x`.
-    pub fn reference(&self, ring: Ring, x: U256) -> U256 {
+    /// Plaintext reference: what the gate computes on `x` in the input ring, as an element of
+    /// the output ring.
+    pub fn reference(&self, rings: GateRings, x: U256) -> U256 {
         match self {
-            GateKind::Lt0 => U256::from(ring.msb(x)),
-            GateKind::Ars { shift } => ring.from_signed(ring.to_signed(x) >> shift),
+            GateKind::Lt0 => U256::from(rings.input.msb(x)),
+            GateKind::Ars { shift } => rings.output.from_signed(rings.input.to_signed(x) >> shift),
         }
+    }
+}
+
+/// The two rings of a gate: its operand is in `input` (Z_{2^w}), its output shares are in
+/// `output` (Z_{2^r}).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GateRings {
+    pub input: Ring,
+    pub output: Ring,
+}
+
+impl GateRings {
+    /// The same ring for input and output: the original single-ring gate.
+    pub fn uniform(ring: Ring) -> GateRings {
+        GateRings { input: ring, output: ring }
     }
 }
 
@@ -77,7 +96,7 @@ fn from_label(l: Label) -> WireMod2 {
 /// Alice's (party 0's) material for one gate instance. Not `Clone`: it is single-use.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct GarblerKey {
-    ring: Ring,
+    rings: GateRings,
     kind: GateKind,
     /// `[label of 0, label of 1]` for each `x0` wire, LSB first.
     x0_labels: Vec<[Label; 2]>,
@@ -85,7 +104,7 @@ pub struct GarblerKey {
     x1_labels: Vec<[Label; 2]>,
     /// Random OT sender strings `(m0, m1)`, one pair per `x1` wire.
     ot: Vec<[Label; 2]>,
-    /// `-R`.
+    /// `-R`, in the output ring.
     #[serde(with = "ethnum::serde::compressed_bytes::le")]
     z_share: U256,
 }
@@ -93,11 +112,11 @@ pub struct GarblerKey {
 /// Bob's (party 1's) material for one gate instance.
 #[derive(Serialize, Deserialize)]
 pub struct EvaluatorKey {
-    ring: Ring,
+    rings: GateRings,
     kind: GateKind,
     gc: GarbledCircuit,
     outputs: OutputMapping,
-    /// Active labels of the `R` wires.
+    /// Active labels of the `R` wires (r of them).
     r_labels: Vec<Label>,
     /// Random OT choice bits `c`, bit j for `x1` wire j.
     #[serde(with = "ethnum::serde::compressed_bytes::le")]
@@ -107,9 +126,11 @@ pub struct EvaluatorKey {
 }
 
 /// Fresh keys for one gate instance.
-pub fn gen(kind: GateKind, ring: Ring) -> Result<(GarblerKey, EvaluatorKey), Error> {
-    let circuit = ShareConverted::new(kind, ring)?; // create the circuit which will need 3 inputs x0, x1 and R and provides f(x_0 + x_1) * R
-    let n = ring.bits() as usize;
+pub fn gen(kind: GateKind, rings: GateRings) -> Result<(GarblerKey, EvaluatorKey), Error> {
+    let circuit = ShareConverted::new(kind, rings)?; // create the circuit which will need 3 inputs x0, x1 and R and provides f(x_0 + x_1) + R
+    let (input, output) = (rings.input, rings.output);
+    let n = input.bits() as usize; // operand width w
+    let out = output.bits() as usize; // output width r
     // encoder: secret input for each input hold a label for 0, global offset gives label for 1 (0 xor offset). used to build labels for inputs
     // gc: garbled tables for evaluator
     // outputs: mapping turning final output labels back to plain bits
@@ -118,52 +139,60 @@ pub fn gen(kind: GateKind, ring: Ring) -> Result<(GarblerKey, EvaluatorKey), Err
     let (zeros, ones) = (encode(0), encode(1)); 
     let pair = |i: usize| [zeros[i], ones[i]]; // pair for wire i 
 
-    // generate the -R which will be given to the garbler
-    let r = ring.random();
-    let r_labels = (0..n).map(|j| pair(2 * n + j)[bit(r, j as u32) as usize]).collect();
+    // generate the -R which will be given to the garbler, in the output ring
+    let r = output.random();
+    let r_labels = (0..out).map(|j| pair(2 * n + j)[bit(r, j as u32) as usize]).collect();
     
     // generate random (m0, m1) for garbler
     let ot: Vec<[Label; 2]> = (0..n).map(|_| [rand::random(), rand::random()]).collect();
     // c and m_c for evaluator (correlated randomness)
-    let ot_choice = ring.random();
+    let ot_choice = input.random();
     let ot_labels = (0..n).map(|j| ot[j][bit(ot_choice, j as u32) as usize]).collect();
     
     Ok((
         // garbler gets x0 and x1 lables and -R
         GarblerKey {
-            ring,
+            rings,
             kind,
             x0_labels: (0..n).map(pair).collect(),
             x1_labels: (n..2 * n).map(pair).collect(),
             ot,
-            z_share: ring.neg(r),
+            z_share: output.neg(r),
         },
         // gets the Circuit and the output decoding, Can not tell which labels stand for thwat
-        EvaluatorKey { ring, kind, gc, outputs, r_labels, ot_choice, ot_labels },
+        EvaluatorKey { rings, kind, gc, outputs, r_labels, ot_choice, ot_labels },
     ))
 }
 
 impl GarblerKey {
-    pub fn ring(&self) -> Ring {
-        self.ring
+    pub fn rings(&self) -> GateRings {
+        self.rings
+    }
+
+    pub fn input_ring(&self) -> Ring {
+        self.rings.input
+    }
+
+    pub fn output_ring(&self) -> Ring {
+        self.rings.output
     }
 
     pub fn kind(&self) -> GateKind {
         self.kind
     }
 
-    /// Length of Garblers's message per instance: n `x0` labels, then n OT pairs.
+    /// Length of Garblers's message per instance: w `x0` labels, then w OT pairs.
     pub fn message_len(&self) -> usize {
-        3 * self.ring.bits() as usize
+        3 * self.rings.input.bits() as usize
     }
 
     /// Step 2. Given Garbler's share bit of `x0` and Evaluator's OT correction bit of `w`, returns the message to
-    /// the output share `-R`.
+    /// the output share `-R` (in the output ring).
     /// If bit j of w is 0, the garbler sends (s0 ^ m0, s1 ^ m1).
     /// If bit j of w is 1, it swaps the pads and sends (s0 ^ m1, s1 ^ m0).
     /// Consumes the key: responding twice would give Bob two labels of an `x0` wire, and so Delta.
     pub fn respond(self, x0: U256, w: U256) -> (Vec<u128>, U256) {
-        let n = self.ring.bits();
+        let n = self.rings.input.bits();
         let mut msg = Vec::with_capacity(self.message_len());
 
         // picks the wire label for that bit's actual value
@@ -186,24 +215,32 @@ impl GarblerKey {
 }
 
 impl EvaluatorKey {
-    pub fn ring(&self) -> Ring {
-        self.ring
+    pub fn rings(&self) -> GateRings {
+        self.rings
+    }
+
+    pub fn input_ring(&self) -> Ring {
+        self.rings.input
+    }
+
+    pub fn output_ring(&self) -> Ring {
+        self.rings.output
     }
 
     pub fn kind(&self) -> GateKind {
         self.kind
     }
 
-    /// Step 1. Evaluator's OT correction `w = c XOR x1`, all n bits in one ring element.
+    /// Step 1. Evaluator's OT correction `w = c XOR x1`, all w bits in one input-ring element.
     pub fn request(&self, x1: U256) -> U256 {
-        self.ring.reduce(self.ot_choice ^ x1)
+        self.rings.input.reduce(self.ot_choice ^ x1)
     }
 
     /// Step 3. Evaluates the garbled circuit on Garbler's message and returns Evaluator's output
-    /// share `z1 = f(x0 + x1) + R`. Consumes the key, like [`GarblerKey::respond`].
+    /// share `z1 = f(x0 + x1) + R` in the output ring. Consumes the key, like [`GarblerKey::respond`].
     pub fn finish(self, x1: U256, msg: &[u128]) -> Result<U256, Error> {
         // check size
-        let n = self.ring.bits() as usize;
+        let n = self.rings.input.bits() as usize;
         if msg.len() != 3 * n {
             return Err(Error::new(format!("garbler message has {} labels, expected {}", msg.len(), 3 * n)));
         }
@@ -223,17 +260,17 @@ impl EvaluatorKey {
         // build circuit input vector
         // 0..n: x0_labels (with one active label)
         // n..2n: x1_labels (with one active label)
-        // 2n..3n: R
+        // 2n..2n+r: R
         let inputs: Vec<WireMod2> = x0_labels            // n labels from the garbler's message
             .iter().copied()                             // &[u128] → u128
             .chain(x1_labels)                            // n labels just unmasked from the OT
-            .chain(self.r_labels.iter().copied())        // n labels from the dealer (key file)
+            .chain(self.r_labels.iter().copied())        // r labels from the dealer (key file)
             .map(from_label)                             // u128 → WireMod2
             .collect();
 
 
         // rebuilds to get circuit structure
-        let circuit = ShareConverted::new(self.kind, self.ring)?;
+        let circuit = ShareConverted::new(self.kind, self.rings)?;
         // evaluates it using the inputs and gains f(x_0+x_1)+R
         let bits = self.gc.eval(&circuit, inputs, &self.outputs)?; //calls circuit.execute(&mut evaluator, ..
         Ok(bits.iter().enumerate().fold(U256::ZERO, |z, (i, &b)| z | (U256::from(b) << i as u32)))
@@ -260,11 +297,19 @@ impl PartyKey {
         }
     }
 
-    pub fn ring(&self) -> Ring {
+    pub fn rings(&self) -> GateRings {
         match self {
-            PartyKey::Garbler(k) => k.ring(),
-            PartyKey::Evaluator(k) => k.ring(),
+            PartyKey::Garbler(k) => k.rings(),
+            PartyKey::Evaluator(k) => k.rings(),
         }
+    }
+
+    pub fn input_ring(&self) -> Ring {
+        self.rings().input
+    }
+
+    pub fn output_ring(&self) -> Ring {
+        self.rings().output
     }
 
     pub fn kind(&self) -> GateKind {
@@ -277,13 +322,13 @@ impl PartyKey {
 
 /// The dealer: fresh garbled circuits, masks and random OTs for `count` independent gate
 /// instances. Party 0's keys come first.
-pub fn deal(kind: GateKind, ring: Ring, count: usize) -> Result<(Vec<PartyKey>, Vec<PartyKey>), Error> {
+pub fn deal(kind: GateKind, rings: GateRings, count: usize) -> Result<(Vec<PartyKey>, Vec<PartyKey>), Error> {
     let mut keys0 = Vec::with_capacity(count);
     let mut keys1 = Vec::with_capacity(count);
 
     // for each gate generate gen and evaluator key
     for _ in 0..count {
-        let (g, e) = gen(kind, ring)?;
+        let (g, e) = gen(kind, rings)?;
         keys0.push(PartyKey::Garbler(g));
         keys1.push(PartyKey::Evaluator(e));
     }

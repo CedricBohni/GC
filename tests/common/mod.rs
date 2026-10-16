@@ -6,9 +6,14 @@ use num_bigint::BigInt;
 
 /// `1{x < 0}` or `floor(x / 2^s)` for the n-bit two's complement value `x`, as a ring element.
 pub fn bigint_reference(kind: GateKind, n: u32, x: U256) -> U256 {
-    let modulus = BigInt::from(1u8) << n as usize;
+    bigint_reference_widths(kind, n, n, x)
+}
+
+/// The same for a `w`-bit operand `x`, with the result reduced mod 2^r.
+pub fn bigint_reference_widths(kind: GateKind, w: u32, r: u32, x: U256) -> U256 {
+    let modulus = BigInt::from(1u8) << w as usize;
     let unsigned: BigInt = x.to_string().parse().unwrap();
-    assert!(unsigned < modulus, "x = {x} is not reduced mod 2^{n}");
+    assert!(unsigned < modulus, "x = {x} is not reduced mod 2^{w}");
     let signed = if unsigned >= &modulus >> 1usize { unsigned - &modulus } else { unsigned };
     let out = match kind {
         GateKind::Lt0 => BigInt::from((signed < BigInt::from(0)) as u8),
@@ -23,7 +28,8 @@ pub fn bigint_reference(kind: GateKind, n: u32, x: U256) -> U256 {
             }
         }
     };
-    let reduced = ((out % &modulus) + &modulus) % &modulus;
+    let out_modulus = BigInt::from(1u8) << r as usize;
+    let reduced = ((out % &out_modulus) + &out_modulus) % &out_modulus;
     reduced.to_string().parse().unwrap()
 }
 
@@ -40,4 +46,8 @@ fn reference_spot_checks() {
     assert_eq!(bigint_reference(GateKind::Ars { shift: 255 }, 256, U256::MAX), U256::MAX);
     assert_eq!(bigint_reference(GateKind::Ars { shift: 255 }, 256, U256::ONE << 255), U256::MAX);
     assert_eq!(bigint_reference(GateKind::Ars { shift: 255 }, 256, (U256::ONE << 255) - U256::ONE), U256::ZERO);
+    // 4-bit operand, wider and narrower outputs: -3 >> 1 = -2.
+    assert_eq!(bigint_reference_widths(GateKind::Ars { shift: 1 }, 4, 8, u(0xD)), u(0xFE));
+    assert_eq!(bigint_reference_widths(GateKind::Ars { shift: 1 }, 4, 2, u(0xD)), u(0b10));
+    assert_eq!(bigint_reference_widths(GateKind::Lt0, 4, 1, u(0x8)), u(1));
 }

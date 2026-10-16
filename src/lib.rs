@@ -2,10 +2,13 @@
 //! 2 semi-honest parties), following Hemenway, Lu, Ostrovsky, Welser: "High-precision Secure
 //! Computation of Satellite Collision Probabilities", SCN 2016.
 //!
-//! Gates, over Z_{2^n} for any 1 <= n <= 256 on signed (two's complement) values:
+//! Gates on signed (two's complement) values. Each gate reads its operand in Z_{2^w} and
+//! outputs additive shares in Z_{2^r}, for any 1 <= w, r <= 256 (see [`GateRings`]):
 //! - `lt0`: `1{x < 0}`, share-converted Less-Than-Zero (Algorithm 2),
-//! - `ars`: arithmetic right shift by a public `s`, share-converted shift-right-by-constant
-//!   (Algorithm 3).
+//! - `ars`: `floor(x / 2^s) mod 2^r`, arithmetic right shift by a public `s < w`,
+//!   share-converted shift-right-by-constant (Algorithm 3).
+//!
+//! With w = r ([`GateRings::uniform`]) this is the single-ring gate of the paper.
 //!
 //! Roles:
 //! - the dealer calls [`gates::deal`] and sends each party its `Vec<PartyKey>` (serde),
@@ -21,7 +24,7 @@ pub mod ring;
 pub mod transport;
 
 pub use fixed::FixedPoint;
-pub use gates::{deal, GateKind, PartyKey};
+pub use gates::{deal, GateKind, GateRings, PartyKey};
 pub use ring::{Ring, I256, U256};
 
 #[derive(Debug)]
@@ -59,13 +62,14 @@ impl From<swanky_error::Error> for Error {
     }
 }
 
-/// Run one gate on the ring element `x` with fresh keys: the dealer deals, `x` is split into
-/// random additive shares, both parties run the online phase, and the output is reconstructed.
-pub fn simulate(kind: GateKind, ring: Ring, x: U256) -> Result<U256, Error> {
-    let (alice, bob) = gates::gen(kind, ring)?;
-    let (x0, x1) = ring.share(x);
+/// Run one gate on `x` (in the input ring) with fresh keys: the dealer deals, `x` is split into
+/// random additive shares, both parties run the online phase, and the output is reconstructed
+/// in the output ring.
+pub fn simulate(kind: GateKind, rings: GateRings, x: U256) -> Result<U256, Error> {
+    let (alice, bob) = gates::gen(kind, rings)?;
+    let (x0, x1) = rings.input.share(x);
     let w = bob.request(x1);
     let (msg, z0) = alice.respond(x0, w);
     let z1 = bob.finish(x1, &msg)?;
-    Ok(ring.add(z0, z1))
+    Ok(rings.output.add(z0, z1))
 }

@@ -1,6 +1,6 @@
 //! Runs the cases in tests/my_cases.txt. Add your own lines there.
 
-use gc_gates::{simulate, FixedPoint, GateKind, Ring};
+use gc_gates::{GateRings, simulate, FixedPoint, GateKind, Ring};
 
 const TRIALS: usize = 10;
 
@@ -26,9 +26,9 @@ fn my_cases() {
         let x = fp.parse(value).unwrap_or_else(|e| panic!("{at}: {e}"));
 
         for kind in [GateKind::Lt0, GateKind::Ars { shift: num(shift) }] {
-            let want = kind.reference(ring, x);
+            let want = kind.reference(GateRings::uniform(ring), x);
             for _ in 0..TRIALS {
-                let got = simulate(kind, ring, x).unwrap_or_else(|e| panic!("{at}: {e}"));
+                let got = simulate(kind, GateRings::uniform(ring), x).unwrap_or_else(|e| panic!("{at}: {e}"));
                 count += 1;
                 if got != want {
                     failures.push(format!(

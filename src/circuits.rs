@@ -2,54 +2,54 @@
 //! written once against swanky's [`FancyBinary`]. The same code is garbled by the dealer,
 //! evaluated under garbling by party 1, and run in plaintext by the tests.
 //!
-//! Hardwired: the ring width n and the gate. Inputs, n wires each, least significant bit
-//! first: Alice's share `x0`, Bob's share `x1`, and Alice's random mask `R`.
+//! Hardwired: the gate, the operand width w and the output width r (independent; r > w,
+//! r = w and r < w all work). Inputs, least significant bit first: Alice's share `x0` and
+//! Bob's share `x1` (w wires each), and Alice's random mask `R` (r wires).
 //!
 //! ```text
 //! Algorithm 2 (< 0)                         Algorithm 3 (>> c)
-//!   x <- x0 + x1 (mod 2^n)                    x <- x0 + x1 (mod 2^n)
-//!   b <- 1{x < 0}  (the sign wire of x)       y <- x >> c  (sign wire duplicated, c low wires dropped)
-//!   z1 = b + R (mod 2^n) -> Bob               z1 = y + R (mod 2^n) -> Bob
+//!   x <- x0 + x1 (mod 2^w)                    x <- x0 + x1 (mod 2^w)
+//!   b <- 1{x < 0}  (the sign wire of x)       y <- x >> c  in r bits (sign wire repeated, c low wires dropped)
+//!   z1 = b + R (mod 2^r) -> Bob               z1 = y + R (mod 2^r) -> Bob
 //! ```
 //!
-//! Alice keeps `z0 = -R`, so `z0 + z1 = f(x)`. The sign test and the shift are pure wiring.
-//! Each addition is a ripple-carry adder with one AND per bit, and the carry out of the top
-//! bit is never computed. Both gates cost `2(n-1)` AND gates. XOR and NOT are free.
+//! Alice keeps `z0 = -R`, so `z0 + z1 = f(x) mod 2^r`. The sign test and the shift are pure
+//! wiring. Each addition is a ripple-carry adder with one AND per bit, and the carry out of the
+//! top bit is never computed. Both gates cost `(w-1) + (r-1)` AND gates, `2(n-1)` for
+//! r = w = n. XOR and NOT are free.
 
-use crate::gates::GateKind;
-use crate::ring::Ring;
+use crate::gates::{GateKind, GateRings};
 use crate::Error;
 use fancy_traits::{Circuit, CircuitInputMapper, CircuitOutputMapper, FancyBinary};
 use swanky_channel::Channel;
 
-/// One share-converted gate over Z_{2^n}: Algorithm 2 or 3.
+/// One share-converted gate from Z_{2^w} to Z_{2^r}: Algorithm 2 or 3.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ShareConverted {
     kind: GateKind,
-    bits: u32,
+    in_bits: u32,
+    out_bits: u32,
 }
 
 impl ShareConverted {
-    pub fn new(kind: GateKind, ring: Ring) -> Result<ShareConverted, Error> {
+    pub fn new(kind: GateKind, rings: GateRings) -> Result<ShareConverted, Error> {
+        let w = rings.input.bits();
         if let GateKind::Ars { shift } = kind {
-            if shift >= ring.bits() {
-                return Err(Error::new(format!(
-                    "shift must be in 0..{n} for a {n}-bit ring, got {shift}",
-                    n = ring.bits()
-                )));
+            if shift >= w {
+                return Err(Error::new(format!("shift must be in 0..{w} for a {w}-bit operand, got {shift}")));
             }
         }
-        Ok(ShareConverted { kind, bits: ring.bits() })
+        Ok(ShareConverted { kind, in_bits: w, out_bits: rings.output.bits() })
     }
 
-    /// Input wires: `x0`, `x1`, `R`, n each.
+    /// Input wires: `x0` and `x1` (w each), then `R` (r).
     pub fn ninputs(&self) -> usize {
-        3 * self.bits as usize
+        2 * self.in_bits as usize + self.out_bits as usize
     }
 
     /// Number of AND gates, the only gates that cost ciphertexts.
     pub fn and_count(&self) -> usize {
-        2 * (self.bits as usize - 1)
+        (self.in_bits as usize - 1) + (self.out_bits as usize - 1)
     }
 }
 
@@ -59,16 +59,17 @@ impl<F: FancyBinary> Circuit<F> for ShareConverted {
 
     // does the computation of the sgn(x) or the x >> c
     fn execute(&self, f: &mut F, inputs: Vec<F::Item>, ch: &mut Channel) -> swanky_error::Result<Vec<F::Item>> {
-        let n = self.bits as usize;
-        assert_eq!(inputs.len(), 3 * n, "expected x0, x1 and R, {n} wires each");
-        let (x0, rest) = inputs.split_at(n);
-        let (x1, r) = rest.split_at(n);
-        let x = add(f, x0, x1, ch)?; //first line of Algorithm 2 and 3
+        let (w, out) = (self.in_bits as usize, self.out_bits as usize);
+        assert_eq!(inputs.len(), 2 * w + out, "expected x0 and x1 ({w} wires each) and R ({out} wires)");
+        let (x0, rest) = inputs.split_at(w);
+        let (x1, r) = rest.split_at(w);
+        let x = add(f, x0, x1, ch)?; //first line of Algorithm 2 and 3, over w bits
         match self.kind {
-            GateKind::Lt0 => increment(f, r, &x[n - 1], ch), // sign(x) adding the sign bit to r
+            GateKind::Lt0 => increment(f, r, &x[w - 1], ch), // sign(x) adding the sign bit to r, over r bits
             GateKind::Ars { shift } => {
                 let s = shift as usize;
-                let y: Vec<F::Item> = (0..n).map(|i| x[(i + s).min(n - 1)].clone()).collect(); // drop low shift bits
+                // drop low shift bits; past the top the sign wire repeats (sign extension to r bits)
+                let y: Vec<F::Item> = (0..out).map(|i| x[(i + s).min(w - 1)].clone()).collect();
                 add(f, &y, r, ch) // add y and R
             }
         }
